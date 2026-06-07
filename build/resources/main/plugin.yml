@@ -1,0 +1,13 @@
+name: BedrockBox
+version: '1.0-BETA'
+main: cc.psyc0dev.bedrockBox.BedrockBox
+api-version: '1.21'
+commands:
+  bedrockbox:
+    description: BedrockBox game commands
+    aliases: [bb, bbox]
+    usage: /<command> <start|stop|setlobby>
+permissions:
+  bedrockbox.admin:
+    description: Allows using BedrockBox admin commands
+    default: op

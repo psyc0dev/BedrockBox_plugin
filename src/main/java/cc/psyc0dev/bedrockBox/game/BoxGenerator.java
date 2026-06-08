@@ -9,7 +9,6 @@ import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.type.Bed;
 import org.bukkit.entity.Villager;
 import org.bukkit.entity.EntityType;
-import org.bukkit.inventory.MerchantRecipe;
 
 import java.util.HashMap;
 import java.util.List;
@@ -37,13 +36,13 @@ public class BoxGenerator {
         this.centerZ = z;
     }
 
-    public Map<Integer, TeamBase> generateFull(World world, List<MerchantRecipe> trades, int roomCount) {
+    public Map<Integer, TeamBase> generateFull(World world, int roomCount) {
         int minX = centerX - HALF, maxX = centerX + HALF - 1;
         int minZ = centerZ - HALF, maxZ = centerZ + HALF - 1;
         int maxY = BOX_MIN_Y + BOX_HEIGHT - 1;
 
         generateShellAndInterior(world, minX, maxX, minZ, maxZ, maxY);
-        return generateRooms(world, minX, maxX, minZ, maxZ, trades, roomCount);
+        return generateRooms(world, minX, maxX, minZ, maxZ, roomCount);
     }
 
     public int randomCenterOffset() {
@@ -58,19 +57,16 @@ public class BoxGenerator {
                             || y == BOX_MIN_Y || y == maxY;
 
                     Block block = world.getBlockAt(x, y, z);
-                    if (isEdge) {
-                        block.setType(Material.BEDROCK);
-                    } else {
-                        block.setType(random.nextDouble() < 0.05
-                                ? Material.EMERALD_ORE
-                                : Material.STONE);
+                    Material target = isEdge ? Material.BEDROCK : (random.nextDouble() < 0.05 ? Material.EMERALD_ORE : Material.STONE);
+                    if (block.getType() != target) {
+                        block.setType(target, false);
                     }
                 }
             }
         }
     }
 
-    private Map<Integer, TeamBase> generateRooms(World world, int minX, int maxX, int minZ, int maxZ, List<MerchantRecipe> trades, int roomCount) {
+    private Map<Integer, TeamBase> generateRooms(World world, int minX, int maxX, int minZ, int maxZ, int roomCount) {
         Map<Integer, TeamBase> bases = new HashMap<>();
 
         int wallUsable = BOX_SIZE - 2 * ROOM_MARGIN;
@@ -107,8 +103,8 @@ public class BoxGenerator {
 
             int floorY = randomRoomY();
             TeamBase base = useXBuilder
-                    ? buildRoomX(world, wx, wz, dir, floorY, bedFacing, trades)
-                    : buildRoomZ(world, wx, wz, dir, floorY, bedFacing, trades);
+                    ? buildRoomX(world, wx, wz, dir, floorY, bedFacing)
+                    : buildRoomZ(world, wx, wz, dir, floorY, bedFacing);
             bases.put(i, base);
         }
 
@@ -119,7 +115,7 @@ public class BoxGenerator {
         return BOX_MIN_Y + 4 + random.nextInt(BOX_HEIGHT - ROOM_HEIGHT - 6);
     }
 
-    private TeamBase buildRoomZ(World world, int cx, int wallZ, int dir, int floorY, BlockFace bedFacing, List<MerchantRecipe> trades) {
+    private TeamBase buildRoomZ(World world, int cx, int wallZ, int dir, int floorY, BlockFace bedFacing) {
         int startZ = wallZ + dir;
         int endZ = wallZ + dir * ROOM_SIZE;
         if (dir < 0) { int tmp = startZ; startZ = endZ; endZ = tmp; }
@@ -131,49 +127,60 @@ public class BoxGenerator {
         for (int x = cx - half; x <= cx + half; x++) {
             for (int z = startZ; z <= endZ; z++) {
                 for (int y = floorY; y <= ceilY; y++) {
-                    world.getBlockAt(x, y, z).setType(Material.AIR);
+                    Block block = world.getBlockAt(x, y, z);
+                    if (block.getType() != Material.AIR) {
+                        block.setType(Material.AIR, false);
+                    }
                 }
             }
         }
 
         for (int x = cx - half; x <= cx + half; x++) {
             for (int z = startZ; z <= endZ; z++) {
-                world.getBlockAt(x, floorY - 1, z).setType(Material.BEDROCK);
-                world.getBlockAt(x, ceilY, z).setType(Material.BEDROCK);
+                Block b1 = world.getBlockAt(x, floorY - 1, z);
+                if (b1.getType() != Material.BEDROCK) b1.setType(Material.BEDROCK, false);
+                Block b2 = world.getBlockAt(x, ceilY, z);
+                if (b2.getType() != Material.BEDROCK) b2.setType(Material.BEDROCK, false);
             }
         }
 
         for (int z = startZ; z <= endZ; z++) {
             for (int y = floorY; y < ceilY; y++) {
-                world.getBlockAt(cx - half, y, z).setType(Material.BEDROCK);
-                world.getBlockAt(cx + half, y, z).setType(Material.BEDROCK);
+                Block b1 = world.getBlockAt(cx - half, y, z);
+                if (b1.getType() != Material.BEDROCK) b1.setType(Material.BEDROCK, false);
+                Block b2 = world.getBlockAt(cx + half, y, z);
+                if (b2.getType() != Material.BEDROCK) b2.setType(Material.BEDROCK, false);
             }
         }
 
         int backZ = dir < 0 ? startZ : endZ;
         for (int x = cx - half; x <= cx + half; x++) {
             for (int y = floorY; y < ceilY; y++) {
-                world.getBlockAt(x, y, backZ).setType(Material.BEDROCK);
+                Block block = world.getBlockAt(x, y, backZ);
+                if (block.getType() != Material.BEDROCK) block.setType(Material.BEDROCK, false);
             }
         }
 
-        world.getBlockAt(cx, floorY, wallZ).setType(Material.AIR);
-        world.getBlockAt(cx, floorY + 1, wallZ).setType(Material.AIR);
+        Block entrance1 = world.getBlockAt(cx, floorY, wallZ);
+        if (entrance1.getType() != Material.AIR) entrance1.setType(Material.AIR, false);
+        Block entrance2 = world.getBlockAt(cx, floorY + 1, wallZ);
+        if (entrance2.getType() != Material.AIR) entrance2.setType(Material.AIR, false);
 
         int bedZ = dir < 0 ? startZ + 1 : endZ - 1;
         Location bedLoc = placeBed(world, cx, bedY, bedZ, bedFacing);
 
         int villX = cx - half + 1;
         int villZ = backZ - dir;
-        Location villagerLoc = spawnVillager(world, villX, bedY, villZ, trades);
+        Villager villager = spawnVillager(world, villX, bedY, villZ);
+        Location villagerLoc = villager.getLocation();
 
         int spawnZ = (wallZ + bedZ) / 2;
         Location spawnLoc = new Location(world, cx + 0.5, bedY + 0.5, spawnZ + 0.5);
 
-        return new TeamBase(spawnLoc, bedLoc, villagerLoc);
+        return new TeamBase(spawnLoc, bedLoc, villagerLoc, villager);
     }
 
-    private TeamBase buildRoomX(World world, int wallX, int cz, int dir, int floorY, BlockFace bedFacing, List<MerchantRecipe> trades) {
+    private TeamBase buildRoomX(World world, int wallX, int cz, int dir, int floorY, BlockFace bedFacing) {
         int startX = wallX + dir;
         int endX = wallX + dir * ROOM_SIZE;
         if (dir < 0) { int tmp = startX; startX = endX; endX = tmp; }
@@ -185,46 +192,57 @@ public class BoxGenerator {
         for (int x = startX; x <= endX; x++) {
             for (int z = cz - half; z <= cz + half; z++) {
                 for (int y = floorY; y <= ceilY; y++) {
-                    world.getBlockAt(x, y, z).setType(Material.AIR);
+                    Block block = world.getBlockAt(x, y, z);
+                    if (block.getType() != Material.AIR) {
+                        block.setType(Material.AIR, false);
+                    }
                 }
             }
         }
 
         for (int x = startX; x <= endX; x++) {
             for (int z = cz - half; z <= cz + half; z++) {
-                world.getBlockAt(x, floorY - 1, z).setType(Material.BEDROCK);
-                world.getBlockAt(x, ceilY, z).setType(Material.BEDROCK);
+                Block b1 = world.getBlockAt(x, floorY - 1, z);
+                if (b1.getType() != Material.BEDROCK) b1.setType(Material.BEDROCK, false);
+                Block b2 = world.getBlockAt(x, ceilY, z);
+                if (b2.getType() != Material.BEDROCK) b2.setType(Material.BEDROCK, false);
             }
         }
 
         for (int x = startX; x <= endX; x++) {
             for (int y = floorY; y < ceilY; y++) {
-                world.getBlockAt(x, y, cz - half).setType(Material.BEDROCK);
-                world.getBlockAt(x, y, cz + half).setType(Material.BEDROCK);
+                Block b1 = world.getBlockAt(x, y, cz - half);
+                if (b1.getType() != Material.BEDROCK) b1.setType(Material.BEDROCK, false);
+                Block b2 = world.getBlockAt(x, y, cz + half);
+                if (b2.getType() != Material.BEDROCK) b2.setType(Material.BEDROCK, false);
             }
         }
 
         int backX = dir < 0 ? startX : endX;
         for (int z = cz - half; z <= cz + half; z++) {
             for (int y = floorY; y < ceilY; y++) {
-                world.getBlockAt(backX, y, z).setType(Material.BEDROCK);
+                Block block = world.getBlockAt(backX, y, z);
+                if (block.getType() != Material.BEDROCK) block.setType(Material.BEDROCK, false);
             }
         }
 
-        world.getBlockAt(wallX, floorY, cz).setType(Material.AIR);
-        world.getBlockAt(wallX, floorY + 1, cz).setType(Material.AIR);
+        Block entrance1 = world.getBlockAt(wallX, floorY, cz);
+        if (entrance1.getType() != Material.AIR) entrance1.setType(Material.AIR, false);
+        Block entrance2 = world.getBlockAt(wallX, floorY + 1, cz);
+        if (entrance2.getType() != Material.AIR) entrance2.setType(Material.AIR, false);
 
         int bedX = dir < 0 ? startX + 1 : endX - 1;
         Location bedLoc = placeBed(world, bedX, bedY, cz, bedFacing);
 
         int villX = backX - dir;
         int villZ = cz - half + 1;
-        Location villagerLoc = spawnVillager(world, villX, bedY, villZ, trades);
+        Villager villager = spawnVillager(world, villX, bedY, villZ);
+        Location villagerLoc = villager.getLocation();
 
         int spawnX = (wallX + bedX) / 2;
         Location spawnLoc = new Location(world, spawnX + 0.5, bedY + 0.5, cz + 0.5);
 
-        return new TeamBase(spawnLoc, bedLoc, villagerLoc);
+        return new TeamBase(spawnLoc, bedLoc, villagerLoc, villager);
     }
 
     private Location placeBed(World world, int x, int y, int z, BlockFace facing) {
@@ -245,7 +263,7 @@ public class BoxGenerator {
         return new Location(world, x + 0.5, y + 0.5, z + 0.5);
     }
 
-    private Location spawnVillager(World world, int x, int y, int z, List<MerchantRecipe> trades) {
+    private Villager spawnVillager(World world, int x, int y, int z) {
         Location loc = new Location(world, x + 0.5, y, z + 0.5);
         Villager villager = (Villager) world.spawnEntity(loc, EntityType.VILLAGER);
         villager.setAI(false);
@@ -254,8 +272,8 @@ public class BoxGenerator {
         villager.setCustomName("Trader");
         villager.setCustomNameVisible(false);
         villager.setCollidable(false);
-        villager.setRecipes(trades);
-        return loc;
+        villager.setRecipes(new java.util.ArrayList<>());
+        return villager;
     }
 
     public void clearBox(World world) {
@@ -267,7 +285,10 @@ public class BoxGenerator {
         for (int x = minX - pad; x <= maxX + pad; x++) {
             for (int z = minZ - pad; z <= maxZ + pad; z++) {
                 for (int y = BOX_MIN_Y - 1; y <= maxY + 1; y++) {
-                    world.getBlockAt(x, y, z).setType(Material.AIR);
+                    Block block = world.getBlockAt(x, y, z);
+                    if (block.getType() != Material.AIR) {
+                        block.setType(Material.AIR, false);
+                    }
                 }
             }
         }

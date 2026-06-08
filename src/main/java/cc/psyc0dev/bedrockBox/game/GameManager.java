@@ -10,7 +10,6 @@ import org.bukkit.boss.BossBar;
 import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.inventory.MerchantRecipe;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataContainer;
 import org.bukkit.persistence.PersistentDataType;
@@ -44,6 +43,8 @@ public class GameManager {
     private World gameWorld;
     private BossBar countdownBar;
     private int countdownTaskId = -1;
+    private int villagerTaskId = -1;
+    private boolean generationComplete = false;
     private int gameCenterX, gameCenterZ;
 
     private static final int BOX_BOUNDARY = BoxGenerator.HALF + 8;
@@ -110,6 +111,7 @@ public class GameManager {
 
         this.gameMode = mode;
         this.gameWorld = world;
+        this.generationComplete = false;
 
         BoxGenerator generator = new BoxGenerator();
 
@@ -126,19 +128,27 @@ public class GameManager {
         int chunkMaxX = (cx + pad) >> 4;
         int chunkMinZ = (cz - pad) >> 4;
         int chunkMaxZ = (cz + pad) >> 4;
+
+        List<java.util.concurrent.CompletableFuture<Chunk>> chunkFutures = new ArrayList<>();
         for (int chunkX = chunkMinX; chunkX <= chunkMaxX; chunkX++) {
             for (int chunkZ = chunkMinZ; chunkZ <= chunkMaxZ; chunkZ++) {
-                world.getChunkAt(chunkX, chunkZ).load(true);
+                chunkFutures.add(world.getChunkAtAsync(chunkX, chunkZ));
             }
         }
 
-        plugin.getLogger().info("Generating 64x64x64 bedrock box...");
+        plugin.getLogger().info("Loading " + chunkFutures.size() + " chunks asynchronously...");
 
-        world.setGameRule(GameRule.KEEP_INVENTORY, false);
-
-        generator.setCenter(cx, cz);
-        generator.clearBox(world);
-        bases = generator.generateFull(world, getDefaultTrades(), roomCount);
+        java.util.concurrent.CompletableFuture.allOf(chunkFutures.toArray(new java.util.concurrent.CompletableFuture[0])).thenRun(() -> {
+            plugin.getServer().getScheduler().runTask(plugin, () -> {
+                plugin.getLogger().info("Chunks loaded. Generating Bedrock Box...");
+                world.setGameRule(GameRules.KEEP_INVENTORY, false);
+                generator.setCenter(cx, cz);
+                generator.clearBox(world);
+                bases = generator.generateFull(world, roomCount);
+                generationComplete = true;
+                plugin.getLogger().info("Bedrock Box generation complete!");
+            });
+        });
 
         state = GameState.COUNTDOWN;
         startCountdown();
@@ -183,6 +193,12 @@ public class GameManager {
     }
 
     private void finishCountdown() {
+        if (!generationComplete) {
+            plugin.getLogger().info("Bedrock Box generation not complete. Postponing game start...");
+            plugin.getServer().getScheduler().runTaskLater(plugin, this::finishCountdown, 10L);
+            return;
+        }
+
         if (countdownTaskId != -1) {
             plugin.getServer().getScheduler().cancelTask(countdownTaskId);
             countdownTaskId = -1;
@@ -200,7 +216,8 @@ public class GameManager {
         assignInitialSpawns();
         teleportPlayersToBases();
         giveStartingGear();
-        hidePlayerNametags(players);
+        setupGameScoreboardTeams();
+        startVillagerLookTask();
 
         for (Player player : players) {
             player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
@@ -259,6 +276,8 @@ public class GameManager {
             }
         }
 
+        stopVillagerLookTask();
+        cleanupScoreboardTeams();
         playerTeams.clear();
         playerSpawns.clear();
         bedIntact.clear();
@@ -388,6 +407,8 @@ public class GameManager {
             for (Player player : plugin.getServer().getOnlinePlayers()) {
                 teleportToLobby(player);
             }
+            stopVillagerLookTask();
+            cleanupScoreboardTeams();
             playerTeams.clear();
             playerSpawns.clear();
             bedIntact.clear();
@@ -452,66 +473,122 @@ public class GameManager {
         player.addPotionEffect(new PotionEffect(PotionEffectType.NIGHT_VISION, PotionEffect.INFINITE_DURATION, 0, false, false));
     }
 
-    private void hidePlayerNametags(List<Player> players) {
+    private void setupGameScoreboardTeams() {
         Scoreboard board = Bukkit.getScoreboardManager().getMainScoreboard();
-        org.bukkit.scoreboard.Team team = board.getTeam("bb_players");
-        if (team == null) team = board.registerNewTeam("bb_players");
-        team.setOption(org.bukkit.scoreboard.Team.Option.NAME_TAG_VISIBILITY, org.bukkit.scoreboard.Team.OptionStatus.NEVER);
-        team.setOption(org.bukkit.scoreboard.Team.Option.COLLISION_RULE, org.bukkit.scoreboard.Team.OptionStatus.ALWAYS);
-        for (Player p : players) {
-            team.addEntry(p.getName());
+
+        // Clean up existing bb_ teams first to avoid conflicts/leaks
+        for (org.bukkit.scoreboard.Team team : new ArrayList<>(board.getTeams())) {
+            if (team.getName().startsWith("bb_")) {
+                team.unregister();
+            }
+        }
+
+        // Loop through all playing players
+        for (Map.Entry<UUID, Integer> entry : playerTeams.entrySet()) {
+            UUID playerUUID = entry.getKey();
+            int teamId = entry.getValue();
+            Player player = plugin.getServer().getPlayer(playerUUID);
+            if (player == null || !player.isOnline()) continue;
+
+            Team teamEnum = Team.byId(teamId);
+            String teamName = "bb_team_" + teamId;
+            org.bukkit.scoreboard.Team scoreboardTeam = board.getTeam(teamName);
+            if (scoreboardTeam == null) {
+                scoreboardTeam = board.registerNewTeam(teamName);
+                scoreboardTeam.color(teamEnum.getAdventureColor());
+                scoreboardTeam.setPrefix(teamEnum.getChatColor().toString());
+                scoreboardTeam.setOption(org.bukkit.scoreboard.Team.Option.NAME_TAG_VISIBILITY, org.bukkit.scoreboard.Team.OptionStatus.FOR_OWN_TEAM);
+                scoreboardTeam.setOption(org.bukkit.scoreboard.Team.Option.COLLISION_RULE, org.bukkit.scoreboard.Team.OptionStatus.ALWAYS);
+            }
+            scoreboardTeam.addEntry(player.getName());
+
+            // If player's name is colored, we can also set their display name and tab list name!
+            player.displayName(net.kyori.adventure.text.Component.text(player.getName(), teamEnum.getAdventureColor()));
+            player.playerListName(net.kyori.adventure.text.Component.text(player.getName(), teamEnum.getAdventureColor()));
+        }
+
+        // Also add villagers to their respective teams
+        if (bases != null) {
+            for (Map.Entry<Integer, TeamBase> entry : bases.entrySet()) {
+                int teamId = entry.getKey();
+                TeamBase base = entry.getValue();
+                if (base.getVillager() != null) {
+                    Team teamEnum = Team.byId(teamId);
+                    String teamName = "bb_team_" + teamId;
+                    org.bukkit.scoreboard.Team scoreboardTeam = board.getTeam(teamName);
+                    if (scoreboardTeam != null) {
+                        scoreboardTeam.addEntry(base.getVillager().getUniqueId().toString());
+                    }
+
+                    // Set custom name to show their team color and be visible
+                    base.getVillager().setCustomName(teamEnum.getChatColor() + "Trader");
+                    base.getVillager().setCustomNameVisible(true);
+                }
+            }
         }
     }
 
-    private List<MerchantRecipe> getDefaultTrades() {
-        List<MerchantRecipe> defaults = new ArrayList<>();
-        addTrade(defaults, Material.COBBLESTONE, 16, Material.STONE_PICKAXE, 1);
-        addTrade(defaults, Material.COBBLESTONE, 32, Material.IRON_PICKAXE, 1);
-        addTrade(defaults, Material.COBBLESTONE, 64, Material.DIAMOND_PICKAXE, 1);
-        addTrade(defaults, Material.COBBLESTONE, 64, Material.GOLD_INGOT, 1);
-        addEnchantedTrade(defaults, Material.GOLD_INGOT, 4, Material.DIAMOND_PICKAXE, 1, Enchantment.EFFICIENCY, 5);
-        addTrade3x3Pickaxe(defaults);
-        addTrade(defaults, Material.COBBLESTONE, 64, Material.IRON_SWORD, 1);
-        addTrade(defaults, Material.COBBLESTONE, 64, Material.IRON_HELMET, 1);
-        addTrade(defaults, Material.COBBLESTONE, 64, Material.IRON_CHESTPLATE, 1);
-        addTrade(defaults, Material.COBBLESTONE, 64, Material.IRON_LEGGINGS, 1);
-        addTrade(defaults, Material.COBBLESTONE, 64, Material.IRON_BOOTS, 1);
-        addTrade(defaults, Material.EMERALD, 32, Material.DIAMOND_SWORD, 1);
-        addTrade(defaults, Material.EMERALD, 32, Material.DIAMOND_HELMET, 1);
-        addTrade(defaults, Material.EMERALD, 32, Material.DIAMOND_CHESTPLATE, 1);
-        addTrade(defaults, Material.EMERALD, 32, Material.DIAMOND_LEGGINGS, 1);
-        addTrade(defaults, Material.EMERALD, 32, Material.DIAMOND_BOOTS, 1);
-        addEnchantedTrade(defaults, Material.EMERALD, 64, Material.DIAMOND_SWORD, 1, Enchantment.SHARPNESS, 1);
-
-        return defaults;
-    }
-
-    private void addTrade(List<MerchantRecipe> list, Material ing, int ingAmt, Material result, int resultAmt) {
-        MerchantRecipe recipe = new MerchantRecipe(new ItemStack(result, resultAmt), 9999999);
-        recipe.addIngredient(new ItemStack(ing, ingAmt));
-        list.add(recipe);
-    }
-
-    private void addEnchantedTrade(List<MerchantRecipe> list, Material ing, int ingAmt, Material result, int resultAmt, Enchantment enchant, int level) {
-        ItemStack item = new ItemStack(result, resultAmt);
-
-        ItemMeta meta = item.getItemMeta();
-        if (meta != null) {
-            meta.addEnchant(enchant, level, true);
-            item.setItemMeta(meta);
+    public void cleanupScoreboardTeams() {
+        Scoreboard board = Bukkit.getScoreboardManager().getMainScoreboard();
+        for (org.bukkit.scoreboard.Team team : new ArrayList<>(board.getTeams())) {
+            if (team.getName().startsWith("bb_")) {
+                team.unregister();
+            }
         }
-
-        MerchantRecipe recipe = new MerchantRecipe(item, 9999999);
-        recipe.addIngredient(new ItemStack(ing, ingAmt));
-        list.add(recipe);
+        for (Player player : plugin.getServer().getOnlinePlayers()) {
+            player.displayName(null);
+            player.playerListName(null);
+        }
     }
 
-    private void addTrade3x3Pickaxe(List<MerchantRecipe> list) {
-        ItemStack pickaxe = createPickaxe3x3();
-        MerchantRecipe recipe = new MerchantRecipe(pickaxe, 9999999);
-        recipe.addIngredient(new ItemStack(Material.EMERALD, 64));
-        list.add(recipe);
+    private void startVillagerLookTask() {
+        stopVillagerLookTask();
+        villagerTaskId = plugin.getServer().getScheduler().scheduleSyncRepeatingTask(plugin, () -> {
+            if (state != GameState.PLAYING || bases == null) {
+                stopVillagerLookTask();
+                return;
+            }
+
+            for (Map.Entry<Integer, TeamBase> entry : bases.entrySet()) {
+                TeamBase base = entry.getValue();
+                org.bukkit.entity.Villager villager = base.getVillager();
+                if (villager == null || !villager.isValid()) continue;
+
+                Location villLoc = villager.getLocation();
+                Player nearest = null;
+                double nearestDistSq = 25.0; // 5 blocks squared
+
+                for (Player player : plugin.getServer().getOnlinePlayers()) {
+                    if (player.getGameMode() == org.bukkit.GameMode.SPECTATOR) continue;
+                    if (!player.getWorld().equals(villLoc.getWorld())) continue;
+
+                    double distSq = player.getLocation().distanceSquared(villLoc);
+                    if (distSq <= nearestDistSq) {
+                        nearest = player;
+                        nearestDistSq = distSq;
+                    }
+                }
+
+                if (nearest != null) {
+                    Location villLocEye = villager.getEyeLocation();
+                    Location playerLoc = nearest.getEyeLocation();
+                    org.bukkit.util.Vector direction = playerLoc.toVector().subtract(villLocEye.toVector());
+                    Location temp = new Location(null, 0, 0, 0);
+                    temp.setDirection(direction);
+                    villager.setRotation(temp.getYaw(), temp.getPitch());
+                }
+            }
+        }, 0L, 2L);
     }
+
+    private void stopVillagerLookTask() {
+        if (villagerTaskId != -1) {
+            plugin.getServer().getScheduler().cancelTask(villagerTaskId);
+            villagerTaskId = -1;
+        }
+    }
+
+
 
     public static ItemStack createPickaxe3x3() {
         ItemStack item = new ItemStack(Material.DIAMOND_PICKAXE);

@@ -22,6 +22,11 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataContainer;
 import org.bukkit.persistence.PersistentDataType;
+import org.bukkit.event.player.PlayerInteractEntityEvent;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.entity.Villager;
+import cc.psyc0dev.bedrockBox.game.ShopManager;
+import cc.psyc0dev.bedrockBox.game.ShopHolder;
 
 public class GameListener implements Listener {
 
@@ -62,8 +67,10 @@ public class GameListener implements Listener {
         Material type = block.getType();
 
         if (type == Material.BEDROCK) {
-            event.setCancelled(true);
-            return;
+            if (player.getGameMode() != GameMode.CREATIVE) {
+                event.setCancelled(true);
+                return;
+            }
         }
 
         if (type == Material.RED_BED) {
@@ -220,5 +227,35 @@ public class GameListener implements Listener {
         if (block.getType() == Material.BEDROCK) return;
         if (block.getType() == Material.RED_BED) return;
         block.breakNaturally(held);
+    }
+
+    @EventHandler
+    public void onPlayerInteractEntity(PlayerInteractEntityEvent event) {
+        if (gameManager.getState() != GameManager.GameState.PLAYING) return;
+        if (!(event.getRightClicked() instanceof Villager)) return;
+
+        event.setCancelled(true); // Cancel vanilla trade inventory opening
+        ShopManager.openShop(event.getPlayer());
+    }
+
+    @EventHandler
+    public void onPlayerInteractAtEntity(org.bukkit.event.player.PlayerInteractAtEntityEvent event) {
+        if (gameManager.getState() != GameManager.GameState.PLAYING) return;
+        if (!(event.getRightClicked() instanceof Villager)) return;
+
+        event.setCancelled(true); // Cancel vanilla trade inventory opening
+    }
+
+    @EventHandler
+    public void onInventoryClick(InventoryClickEvent event) {
+        if (event.getInventory().getHolder() instanceof ShopHolder) {
+            event.setCancelled(true); // block picking up the item
+            if (!(event.getWhoClicked() instanceof Player player)) return;
+
+            // Process click inside shop inventory
+            if (event.getRawSlot() < event.getInventory().getSize()) {
+                ShopManager.handleShopClick(player, event.getSlot());
+            }
+        }
     }
 }
